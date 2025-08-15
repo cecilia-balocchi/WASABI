@@ -8,28 +8,28 @@
 #' As the algorithm is only guaranteed convergence to a local optimum, it is
 #' recommended to run it multiple times with different initializations.
 #'
-#' @usage WASABI(cls.draw = NULL, psm = NULL,
-#'        method.init = c("average", "complete", "fixed", "++", 
-#'                        "random_partition", "+++", "topvi"),
+#' @usage WASABI(cls.draw = NULL, L = 4, psm = NULL,
+#'        method.init = c("++", "average", "complete", "fixed", 
+#'                        "+++", "topvi"),
 #'        lb = FALSE, thin.init = NULL, part.init = NULL,
-#'        method = c("average", "complete", "greedy", "salso"),
-#'        max.k = NULL, L = 10, max.iter = 30, eps = 0.0001, mini.batch = 0,
+#'        method = c("salso", "average", "complete", "greedy"),
+#'        max.k = NULL, max.iter = 30, eps = 0.0001, mini.batch = 0,
 #'        extra.iter = NULL,swap_countone = FALSE,suppress.comment = TRUE,
 #'        return_psm = FALSE,seed = NULL, ...)
 #' 
 #' @param cls.draw A matrix of the MCMC samples of partitions of $n$ data points.
+#' @param L Integer, the number of particles to be used in the WASABI approximation.
 #' @param psm The posterior similarity matrix obtained from MCMC samples of partitions stored in \code{cls.draw}.
-#' @param method.init Initialization method. Options are "average", "complete", "fixed", "++", "random_partition", "+++", and "topvi".
+#' @param method.init Initialization method. Options are "++", "average", "complete", "fixed", "+++", and "topvi". Default is "++".
 #' @param lb Logical, if TRUE, the lower bound for the VI is used in methods "average" or "complete".
 #' @param thin.init Integer, thinning factor for the MCMC samples used to initialize the particles. If NULL, defaults to 10.
 #' @param part.init A matrix of size \code{L} x \code{n}, containing the initial particles. Needs to be provided when \code{method.init = "fixed"}.
-#' @param method The method used to find the partition with minimum EVI (minVI partition). Options are "average", "complete", "greedy", and "salso".
+#' @param method The method used to find the partition with minimum EVI (minVI partition). Options are "salso", "average", "complete", and "greedy". Default is "salso".
 #' @param max.k Integer, the maximum number of clusters considered in the WASABI approximation (for "average", "complete", "greedy"). If NULL, it is set to the minimum of \code{max(Ks.draw)+10} and \code{ceiling(sqrt(n))}.
-#' @param L Integer, the number of particles to be used in the WASABI approximation.
 #' @param max.iter Integer, the maximum number of iterations for the WASABI algorithm.
 #' @param eps Numeric, the relative convergence threshold for the WASABI algorithm. The algorithm stops when the difference in Wasserstein distance between two consecutive iterations is less than \code{eps * log2(n)}.
 #' @param mini.batch Integer, the size of the mini-batch used in the WASABI algorithm. If 0, the full batch is used.
-#' @param extra.iter Integer, the number of additional iterations to run after the mini-batch optimization. If NULL, defaults to 1 if \code{mini.batch > 0}. Has to be greater than 0.
+#' @param extra.iter Integer, the number of additional iterations to run after the mini-batch optimization. If NULL, defaults to 3 if \code{mini.batch > 0}. Has to be greater than 0.
 #' @param swap_countone Logical, if TRUE, the WASABI algorithm allows swapping of particles with only one sample assigned to them (outlier-check step).
 #' @param suppress.comment Logical, if TRUE, suppresses the output comments during the WASABI algorithm execution.
 #' @param return_psm Logical, if TRUE, returns the posterior similarity matrix for each particle.
@@ -48,19 +48,18 @@
 #'
 #' @details Several initialization methods are available:
 #' \itemize{
+#'    \item \code{"++"} uses an algorithm similar to k-means++, i.e. promotes diversity among initial centers by iteratively choosing the next center with probability proportional to its VI distance from the closest already chosen center;
 #'    \item \code{"average"} and \code{"complete"} initialize the particles using hierarchical clustering (choosing the $L$ ones with smallest EVI);
 #'    \item \code{"fixed"} initializes the algorithm with a set of $L$ partition provided in \code{part.init};
-#'    \item \code{"++"} uses an algorithm similar to k-means++, i.e. promotes diversity among initial centers by iteratively choosing the next center with probability proportional to its VI distance from the closest already chosen center;
-#'    \item \code{"random_partition"} initializes by randomly assigning each data point to one of $L$ groups, and the center for each group is chosen based on these assignments;
 #'    \item \code{"+++"} implements the k-means++ initialization using by choosing from the MCMC samples and the partitions obtained from hierarchical clustering (average and complete). Warning: Initialization method \code{"+++"} is deprecated and will be removed in future versions. Use \code{"++"} instead.
 #'    \item \code{"topvi"} initializes with the $L$ partitions with smallest EVI, chosen from the ones generated by \code{"average"}, \code{"complete"} and \code{"fixed"} (if \code{part.init} is provided).
 #' }
 #' The WASABI algorithm iteratively updates the particles by computing the region of attractions (i.e. the assignment of each MCMC sample to the closest particle), in the N-update step, and finding the minEVI particle for each group, in the VI-search step.
 #' The VI-search step can rely on different algorithms for finding the minEVI particle, depending on the \code{method} argument:
 #' \itemize{
+#'    \item \code{"salso"} uses the \code{salso} package to find the minEVI particle.
 #'    \item \code{"average"} and \code{"complete"} use hierarchical clustering to find the minEVI particle;
 #'    \item \code{"greedy"} uses the greedy algorithm implemented in \code{MinimiseEPL} of the \code{GreedyEPL} package;
-#'    \item \code{"salso"} uses the \code{salso} package to find the minEVI particle.
 #' }
 #'
 #' @seealso WASABI_multistart, elbow
@@ -89,11 +88,11 @@
 #' out_WASABI <- WASABI(cls.draw, psm = psm, L = 2,method.init = "topvi", method = "salso", 
 #'                      mini.batch = 200, max.iter = 20, extra.iter = 10)
 #' }
-WASABI <- function(cls.draw = NULL, psm = NULL,
-                   method.init = c("average", "complete", "fixed", "++", "random_partition", "+++", "topvi"),
+WASABI <- function(cls.draw = NULL, L = 4, psm = NULL,
+                   method.init = c("++", "average", "complete", "fixed", "+++", "topvi"),
                    lb = FALSE, thin.init = NULL, part.init = NULL,
-                   method = c("average", "complete", "greedy", "salso"),
-                   max.k = NULL, L = 10, max.iter = 30, eps = 0.0001, mini.batch = 0,
+                   method = c("salso", "average", "complete", "greedy"),
+                   max.k = NULL, max.iter = 10, eps = 0.0001, mini.batch = 200,
                    extra.iter = NULL,
                    swap_countone = FALSE,
                    suppress.comment = TRUE,

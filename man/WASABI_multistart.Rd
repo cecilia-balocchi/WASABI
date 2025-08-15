@@ -4,20 +4,22 @@
 \alias{WASABI_multistart}
 \title{Run the WASABI algorithm multiple times with different starting points}
 \usage{
-WASABI_multistart(cls.draw = NULL, psm = NULL, multi.start = 10, ncores = 1,
-                  method.init = c("average", "complete", "fixed", "++", 
-                                  "random_partition", "+++", "topvi"),
-                  add_topvi = TRUE,
+WASABI_multistart(cls.draw = NULL, L = 4, psm = NULL, multi.start = 10, ncores = 1,
+                  method.init = c("++", "average", "complete", "fixed", 
+                                  "+++", "topvi"),
+                  add_topvi = FALSE,
                   lb = FALSE, thin.init = NULL, part.init = NULL,
-                  method = c("average", "complete", "greedy", "salso"),
-                  max.k = NULL, L = 10, max.iter = 100, eps = 0.0001, mini.batch = 0,
-                  extra.iter = NULL,
+                  method = c("salso", "average", "complete", "greedy"),
+                  max.k = NULL, max.iter = 10, eps = 0.0001, mini.batch = 200,
+                  extra.iter = 5,
                   swap_countone = FALSE,
                   suppress.comment = TRUE,
-                  return_psm = TRUE, seed = NULL)
+                  seed = NULL, ...)
 }
 \arguments{
 \item{cls.draw}{A matrix of the MCMC samples of partitions of $n$ data points.}
+
+\item{L}{Integer, the number of particles to be used in the WASABI approximation.}
 
 \item{psm}{The posterior similarity matrix obtained from MCMC samples of partitions stored in \code{cls.draw}.}
 
@@ -25,7 +27,7 @@ WASABI_multistart(cls.draw = NULL, psm = NULL, multi.start = 10, ncores = 1,
 
 \item{ncores}{Integer, the number of cores to use for parallel processing, relies on parallel::mclapply, so can only be used on MacOs and Linux systems. If 1, no parallel processing is used.}
 
-\item{method.init}{Initialization method. Options are "average", "complete", "fixed", "++", "random_partition", "+++", and "topvi".}
+\item{method.init}{Initialization method. Options are "++", "average", "complete", "fixed", "+++", and "topvi". Default is "++".}
 
 \item{add_topvi}{Logical, if TRUE, the "topvi" method is added once to the initialization methods. This method uses the top VI partitions from hierarchical clustering.}
 
@@ -35,15 +37,13 @@ WASABI_multistart(cls.draw = NULL, psm = NULL, multi.start = 10, ncores = 1,
 
 \item{part.init}{A matrix of size \code{L} x \code{n}, containing the initial particles. Needs to be provided when \code{method.init = "fixed"}.}
 
-\item{method}{The method used to find the partition with minimum EVI (minVI partition). Options are "average", "complete", "greedy", and "salso".}
+\item{method}{The method used to find the partition with minimum EVI (minVI partition). Options are "salso", "average", "complete", and "greedy". Default is "salso".}
 
 \item{max.k}{Integer, the maximum number of clusters considered in the WASABI approximation (for "average", "complete", "greedy"). If NULL, it is set to the minimum of \code{max(Ks.draw)+10} and \code{ceiling(sqrt(n))}.}
 
-\item{L}{Integer, the number of particles to be used in the WASABI approximation.}
-
 \item{max.iter}{Integer, the maximum number of iterations for the WASABI algorithm.}
 
-\item{eps}{Numeric, the convergence threshold for the WASABI algorithm. The algorithm stops when the difference in Wasserstein distance between two consecutive iterations is less than \code{eps}.}
+\item{eps}{Numeric, the relative convergence threshold for the WASABI algorithm. The algorithm stops when the difference in Wasserstein distance between two consecutive iterations is less than \code{eps * log2(n)}.}
 
 \item{mini.batch}{Integer, the size of the mini-batch used in the WASABI algorithm. If 0, the full batch is used.}
 
@@ -53,9 +53,9 @@ WASABI_multistart(cls.draw = NULL, psm = NULL, multi.start = 10, ncores = 1,
 
 \item{suppress.comment}{Logical, if TRUE, suppresses the output comments during the WASABI algorithm execution.}
 
-\item{return_psm}{Logical, if TRUE, returns the posterior similarity matrix for each particle.}
-
 \item{seed}{An optional integer, or a vector of length \code{multi.start} of integers to set the random seed for reproducibility. If NULL, no seed is set.}
+
+\item{...}{Additional arguments passed to the salso algorithm.}
 }
 \value{
 particles A matrix with \code{L} rows, each containing one of the WASABI particles, ordered by decreasing weight.
@@ -92,26 +92,26 @@ returns the run achieving the best WASABI approximation, i.e. the one minimizing
 \details{
 Several initialization methods are available:
 \itemize{
+   \item \code{"++"} uses an algorithm similar to k-means++, i.e. promotes diversity among initial centers by iteratively choosing the next center with probability proportional to its VI distance from the closest already chosen center;
    \item \code{"average"} and \code{"complete"} initialize the particles using hierarchical clustering (choosing the $L$ ones with smallest EVI);
    \item \code{"fixed"} initializes the algorithm with a set of $L$ partition provided in \code{part.init};
-   \item \code{"++"} uses an algorithm similar to k-means++, i.e. promotes diversity among initial centers by iteratively choosing the next center with probability proportional to its VI distance from the closest already chosen center;
-   \item \code{"random_partition"} initializes by randomly assigning each data point to one of $L$ groups, and the center for each group is chosen based on these assignments;
    \item \code{"+++"} implements the k-means++ initialization using by choosing from the MCMC samples and the partitions obtained from hierarchical clustering (average and complete);
    \item \code{"topvi"} initializes with the $L$ partitions with smallest EVI, chosen from the ones generated by \code{"average"}, \code{"complete"} and \code{"fixed"} (if \code{part.init} is provided).
 }
-It is recommended to use random initializations with multiple starts, such as \code{"++"}, \code{"random_partition"}, or \code{"+++"}, to avoid local minima.
+It is recommended to use random initializations with multiple starts, such as \code{"++"}, or \code{"+++"}, to avoid local minima.
 The function uses \code{parallel::mclapply} to run the algorithm in parallel, however this is only supported on MacOS and Linux systems. 
 If you are using Windows, set \code{ncores = 1} to run the algorithm sequentially.
 
 The WASABI algorithm iteratively updates the particles by computing the region of attractions (i.e. the assignment of each MCMC sample to the closest particle), in the N-update step, and finding the minEVI particle for each group, in the VI-search step.
 The VI-search step can rely on different algorithms for finding the minEVI particle, depending on the \code{method} argument:
 \itemize{
+   \item \code{"salso"} uses the \code{salso} package to find the minEVI particle.
    \item \code{"average"} and \code{"complete"} use hierarchical clustering to find the minEVI particle;
    \item \code{"greedy"} uses the greedy algorithm implemented in \code{MinimiseEPL} of the \code{GreedyEPL} package;
-   \item \code{"salso"} uses the \code{salso} package to find the minEVI particle.
 }
 The recommended method is \code{"salso"}, as it is the most accurate while remaining efficient for larger datasets.
 In case of larger datasets, it is recommended to use method \code{"average"}, or the \code{mini.batch} argument to speed up the algorithm.
+Note: in each iteration, the WASABI algorithm is run with \code{return_psm = FALSE} to avoid long computation times for large datasets.
 }
 \examples{
 \dontrun{
