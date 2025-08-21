@@ -1,0 +1,689 @@
+---
+title: "BARseq analysis"
+author: "Cecilia Balocchi and Sara Wade"
+date: "2025-07-21"
+output: html_document
+---
+
+```{r, echo=FALSE, warning= FALSE}
+library(WASABI)
+# devtools::install_github("cecilia-balocchi/WASABI")
+# devtools::install_github("huizizhang949/HBMAP")
+library(HBMAP)
+library(mcclust)
+library(salso)
+library(superheat)
+library(ggplot2)
+library(ggpubr)
+library(tictoc)
+library(colorspace)
+library(parallel)
+library(dplyr)
+source("projection_by_mouse.R")
+```
+
+## Load MAPseq data
+
+The data is from [Chen et al (2019)](https://doi.org/10.1016/j.cell.2019.09.023) describing single-neuron axon projection counts to 11 brain areas: the orbitofrontal cortex (OFC), motor cortex (Motor), rostral striatum (Rstr), somatosensory cortex (SSctx), caudal striatum (Cstr), amygdala (Amyg), ipsilateral visual cortex (VisIp), contralateral visual cortex (VisC), contralateral auditory cortex (AudC), thalamus (Thal), and tectum (Tect). Data are collected across three brains (mice). For illustration, we focus on the first and third brain which are extracted using the same technology (BARseq).
+
+```{r data, warning=FALSE}
+data("data_barseq")
+
+data_barseq = list(data_barseq[[1]], data_barseq[[3]])
+
+M <- length(data_barseq)
+R <- nrow(data_barseq[[1]])
+regions.name <- rownames(data_barseq[[1]])
+
+C <- sapply(1:M, function(m) ncol(data_barseq[[m]]))
+
+mouse.index <- c(rep(1, C[1]),
+                 rep(2, C[2]))
+```
+
+Let's visualize a heatmap of the data. Data are normalized by the total counts to refect projection strength.
+
+```{r eda, echo=FALSE,fig.dim = c(14, 6)}
+# Heat map
+phat = data_barseq[[1]]/t(matrix(colSums(data_barseq[[1]]),C[[1]], R))
+phat2 = data_barseq[[2]]/t(matrix(colSums(data_barseq[[2]]),C[[2]], R))
+
+#sort neurons
+sort_neurons = function(p, R){
+  max_strength = apply(p,2,max)
+  max_region = apply(p,2,which.max)
+  s_ind = sort(max_region, index.return=T)$ix
+  for (r in c(1:R)){
+    if (sum(max_region==r)>1){
+      sr_ind = sort(max_strength[max_region==r],decreasing = TRUE,index.return=T)$ix
+      s_ind[max_region[s_ind]==r] = s_ind[max_region[s_ind]==r][sr_ind]
+    }
+  }
+  return(p[,s_ind])
+}
+
+sphat = sort_neurons(phat,R)
+df1 <- data.frame(region = rep(row.names(phat), C[[1]]), cell = rep(1:C[[1]], each = R), ps = as.vector(sphat))
+gp1 = ggplot(df1, mapping = aes(x = factor(region, levels = row.names(phat)), y = cell, fill = ps))+
+  geom_tile()+
+  theme_void()+
+  scale_fill_gradientn(colours = c('white', 'yellow', 'red'),
+                       values = scales::rescale(c(0, 0.5, 1)),
+                       limits = c(0,1))+
+  guides(fill=guide_legend(title="Projection\nstrength"))+
+  xlab('region')+
+  theme(axis.text.x = element_text(size = 12, angle = 90),
+        axis.title.x = element_text(size = 12),
+        plot.title = element_text(size=12, hjust = 0.5),
+        axis.title.y = element_text(size = 12,angle = 90))+
+  labs(title = paste0("Brain ",1), y = "neurons")
+
+sphat2 = sort_neurons(phat2,R)
+df2 <- data.frame(region = rep(row.names(phat), C[[2]]), cell = rep(1:C[[2]], each = R), ps = as.vector(sphat2))
+gp2 = ggplot(df2, mapping = aes(x = factor(region, levels = row.names(phat)), y = cell, fill = ps))+
+  geom_tile()+
+  theme_void()+
+  scale_fill_gradientn(colours = c('white', 'yellow', 'red'),
+                       values = scales::rescale(c(0, 0.5, 1)),
+                       limits = c(0,1))+
+  guides(fill=guide_legend(title="Projection\nstrength"))+
+  xlab('region')+
+  theme(axis.text.x = element_text(size = 12, angle = 90),
+        axis.title.x = element_text(size = 12),
+        plot.title = element_text(size=12, hjust = 0.5),
+        axis.title.y = element_text(size = 12,angle = 90))+
+  labs(title = paste0("Brain ",2), y = "neurons")
+
+ggarrange(gp1, gp2, ncol=2, nrow=1, common.legend = TRUE, legend="right")
+```
+
+## Run the MCMC algorithm
+
+HBMAP employs a hierarchcal mixture of Dirichlet-Multinomials to model axon projection data.
+
+```{r mcmc}
+
+# Set the truncation 
+J = 35
+
+# ---- parameters to pass to the main function ------
+# mcmc setup
+mcmc_list = list(number_iter = 20000, thinning = 5, burn_in = 10000, adaptive_prop = 0.0001,
+                 auto_save = FALSE,
+                 save_path = NULL,
+                 save_frequency = 1000
+                 )
+# prior parameters, default values will be used if not provided
+prior_list = list(a_gamma = 20, b_gamma = 1, lb_gamma = 1, 
+                  a = 1, tau = 0.2, nu =  1/1000,
+                  a_alpha = 10, b_alpha = 1, a_alpha0 = 5, b_alpha0 = 1)
+
+# Initialization
+set.seed(43)
+Z.init <- k_means_axon(Y = data_barseq, k = 30, transformation = 'cosine', restart = 50, iter.max = 100)
+
+# ------- Run the full model ---------
+seeds = c(101, 112, 323, 141, 555)
+mcmc_all_barseq = parallel::mclapply(1:5, 
+                                   function(g){
+                                     set.seed(g)
+                                     HBMAP_mcmc(Y = data_barseq, J = J, mcmc = mcmc_list, 
+                                                prior = prior_list, Z.init = Z.init, verbose = TRUE)
+                                   },
+                                   mc.cores = 5)
+cls.draw.list = lapply(1:5, function(g){
+  d = mcmc_all_barseq[[g]]$Z_output
+  matrix(unlist(d),length(d), sum(C), byrow = TRUE)
+})                                   
+cls.draw = do.call(rbind, cls.draw.list)
+```
+
+## Clustering
+
+## Optimal clustering estimates
+
+Let's start by considering the optimal clustering solution obtained with different loss functions as well as the marginal posterior on the number of clusters.
+
+```{r clust_summary}
+# Relabel 
+relabel = function(c){
+  uu = unique(c)
+  c2 = c
+  for(i in 1:length(uu)){
+    c2[c == uu[i]] = i
+  }
+  c2
+}
+
+cls.draw = t(apply(cls.draw,1,relabel))
+S = dim(cls.draw)[1]
+
+# Marginal posterior on the number of clusters
+K.draw = apply(cls.draw,1,max)
+
+# Compute psm
+psm = mcclust::comp.psm(cls.draw)
+
+# Estimate clustering and compare different loss functions
+
+#VI
+output_salso = salso(x = cls.draw, maxZealousAttempts=50) 
+
+# Binder's loss
+output_salso_binder = salso(x = cls.draw, loss = "binder", maxNClusters = 100, maxZealousAttempts=50) 
+
+# ARI
+output_salso_ari = salso(x = cls.draw, loss = "omARI",maxNClusters = 100, maxZealousAttempts=50) 
+
+```
+
+
+```{r clust_summary_vis}
+
+# Marginal posterior on the number of clusters
+ggplot()+
+  geom_bar(aes(x=K.draw))+
+  theme_bw() +
+  labs(x="number of clusters")
+print(paste('Mean of marginal posterior on the number of clusters:', mean(K.draw)))
+
+#VI
+print(paste('Number of clusters in vi estimate:', length(unique(output_salso))))
+# Illustrate clustering with psm
+superheat(psm,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_salso,
+          membership.cols = output_salso,
+          bottom.label.text.size = 4,
+          left.label.text.size = 4)
+# Illustrate clustering with heatmap of row-normalized data
+vi_list = lapply(1:M,function(m){output_salso[mouse.index==m]})
+heatmap_ps(Y = data_barseq, Z = vi_list, regions.name = rownames(data_barseq[[1]]), 
+           group.index = mouse.index, group.name = 'brain',
+           cluster.index = 1:length(unique(output_salso)), title = '')
+
+# Binder's loss
+print(paste('Number of clusters in binders estimate:', length(unique(output_salso_binder))))
+# Illustrate clustering with psm
+superheat(psm,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_salso_binder,
+          membership.cols = output_salso_binder,
+          bottom.label.text.size = 4,
+          left.label.text.size = 4)
+# Illustrate clustering with heatmap of row-normalized data
+binder_list = lapply(1:M,function(m){output_salso_binder[mouse.index==m]})
+heatmap_ps(Y = data_barseq, Z = binder_list, regions.name = rownames(data_barseq[[1]]), 
+           group.index = mouse.index, group.name = 'brain',
+           cluster.index = 1:length(unique(output_salso_binder)), title = '')
+
+# ARI
+print(paste('Number of clusters in ari estimate:', length(unique(output_salso_ari))))
+# Illustrate clustering with psm
+superheat(psm,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_salso_ari,
+          membership.cols = output_salso_ari,
+          bottom.label.text.size = 4,
+          left.label.text.size = 4)
+# Illustrate clustering with heatmap of row-normalized data
+ari_list = lapply(1:M,function(m){output_salso_ari[mouse.index==m]})
+heatmap_ps(Y = data_barseq, Z = ari_list, regions.name = rownames(data_barseq[[1]]), 
+           group.index = mouse.index, group.name = 'brain',
+           cluster.index = 1:length(unique(output_salso_ari)), title = '')
+
+```
+
+Different results are obtained in this case. Binder and ARI lead to a large number of clusters, with many small clusters. VI is more parsimonious. Let's summarize with WASABI to better understand if there are multiple modes of clustering.
+
+
+## WASABI
+
+We use the `elbow` function to choose the number of particles $L$ with the elbow method:
+
+```{r run_elbow, warning=FALSE}
+set.seed(123)
+L_max = 10
+tic()
+out_elbow <- elbow(cls.draw, L_max = L_max, multi.start = 4,
+                   method.init = "++",
+                   mini.batch = 500, max.iter = 20, extra.iter = 4, 
+                   method = "salso")
+toc()
+```
+
+```{r plot_elbow}
+L= 3
+ggplot() + 
+  geom_point(aes(x=c(1:L_max), y=out_elbow$wass_vec)) +
+  geom_line(aes(x=c(1:L_max), y=out_elbow$wass_vec)) +
+  labs(x="Number of particles", y="Wasserstein distance") +
+  annotate("point", x = L, y = out_elbow$wass_vec[L], color = "red", shape = 1, size = 3) + 
+  theme_bw()
+```
+
+Once the value of $L$ is chosen, we can run another set of initializations to see if we can find a better approximation:
+
+```{r check_multistart, warning=FALSE}
+tic()
+output_WASABI_mb = WASABI_multistart(cls.draw, psm, 
+                                    multi.start = 50, ncores = 5,
+                                    method.init ="++", add_topvi = FALSE,
+                                    method="salso", L=L,
+                                    mini.batch = 500,
+                                    max.iter= 20, extra.iter = 10,
+                                    swap_countone = TRUE,
+                                    maxNClusters = 45, maxZealousAttempts=20,  
+                                    seed = 54321)
+toc()
+```
+
+```{r}
+output_WASABI <- out_elbow$output_list[[L]]
+if(output_WASABI_mb$wass.dist < output_WASABI$wass.dist){
+  output_WASABI <- output_WASABI_mb
+  print(paste('Improved approximation with multiple initialization: Wass dist =',output_WASABI$wass.dist))
+}
+```
+
+```{r check_average, warning=FALSE}
+tic()
+output_WASABI_avg = WASABI(cls.draw, psm, method.init ="average", 
+                           method="salso", L=L, mini.batch = 500,
+                           maxNClusters = 45, maxZealousAttempts=20,
+                           max.iter= 20, extra.iter = 10, swap_countone = TRUE,
+                           suppress.comment = FALSE)
+print(paste('Average initialization: Wass dist =',output_WASABI_avg$wass.dist))
+toc()
+```
+
+```{r check_complete, warning=FALSE}
+tic()
+output_WASABI_comp = WASABI(cls.draw, psm, method.init ="complete", 
+                           method="salso", L=L, mini.batch = 500,
+                           maxNClusters = 45, maxZealousAttempts=20,
+                           max.iter= 20, extra.iter = 10, swap_countone = TRUE,
+                           suppress.comment = FALSE)
+print(paste('Complete initialization: Wass dist =',output_WASABI_comp$wass.dist))
+toc()
+```
+
+```{r check_fixed, warning=FALSE}
+part.init = matrix(0, L, sum(C))
+nclus = c(25,28,32)
+for (l in c(1:L)){
+  part.init[l,] = as.numeric(salso(x = cls.draw, loss = "binder", maxNClusters = nclus[l])) 
+}
+
+tic()
+output_WASABI_fxd = WASABI(cls.draw, psm, method.init ="fixed", part.init = part.init,
+                           method="salso", L=L, 
+                           maxNClusters = 45, maxZealousAttempts=20,
+                           max.iter= 30, swap_countone = TRUE, suppress.comment = FALSE)
+print(paste('Fixed initialization: Wass dist =',output_WASABI_fxd$wass.dist))
+toc()
+```
+
+### WASABI visualizations
+
+WASABI provides a number of visualization tools. Let's first consider the number of weight of the particles. 
+
+```{r}
+ggsummary(output_WASABI)
+```
+
+We can also plot the data colored by cluster membership for each particle.
+ 
+```{r, fig.width=10, fig.height=4}
+# Create a matrix of normalized data and filter for two regions to draw a scatter plot
+data_norm = list(phat, phat2)
+r1 = 5
+r2 = 9
+data_norm_r1r2_list = lapply(data_norm, function(d){d[c(r1,r2),]})
+data_norm_r1r2 = matrix(unlist(data_norm_r1r2_list), sum(C),2 ,byrow = TRUE)
+ggscatter_grid2d(output_WASABI, data_norm_r1r2) +
+  labs(x=regions.name[r1], y=regions.name[r2])
+```
+
+To better investigate the differences between any two particles, we can also look at the VI contribution of each point (e.g. particle 1 and particle 2):
+
+```{r, warning=FALSE}
+
+p1 = 1
+p2 = 2
+VIC_p1p2 = vi.contribution(output_WASABI$particles[p1,],output_WASABI$particles[p2,])
+meet_p1p2 = cls.meet(output_WASABI$particles[c(p1,p2),])
+
+colors <- rev(sequential_hcl(5, palette = "Purple-Yellow")[1:4])
+ggplot() +
+  geom_point(aes(x = data_norm_r1r2[,1],
+                 y = data_norm_r1r2[,2],
+                 color = VIC_p1p2,
+                 shape = as.factor(meet_p1p2$cls.m))) +
+  theme_bw() +
+  #scale_color_distiller(name = "VIC",palette = "OrRd",direction = 1)+
+  scale_color_gradientn(colours = colors, transform = "sqrt", labels = function(x) sprintf("%.4f", x))+
+  scale_shape_manual(values=c(1:length(unique(meet_p1p2$cls.m))))+
+  guides(shape = guide_legend(title="Meet\ncluster")) +
+  labs(x=regions.name[r1], y=regions.name[r2]) +
+  ggtitle("VI Contribution between particle 1 and 2")
+```
+
+Alternative useful visualizations of MAPseq data are provided by gel plots (heat maps of the normalized data) and line plots (line plots of the normalized data). In the line plots, we filter to clusters/motifs containing at least 10 neurons, as we are not interested in projection patterns characterized by only a small group of neurons. 
+
+```{r}
+# Heat maps
+# Illustrate clustering with heatmap of row-normalized data
+# Compute VIC with particle 1
+VIC_p1p1 = vi.contribution(output_WASABI$particles[1,],output_WASABI$particles[1,])
+VIC_p1p2 = vi.contribution(output_WASABI$particles[1,],output_WASABI$particles[2,])
+VIC_p1p3 = vi.contribution(output_WASABI$particles[1,],output_WASABI$particles[3,])
+lmts = c(0, max(max(VIC_p1p1),max(VIC_p1p2),max(VIC_p1p3)))
+p1_list = lapply(1:M,function(m){output_WASABI$particles[1,mouse.index==m]})
+ps_p1 = heatmap_VIC(Y = data_barseq, Z = p1_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p1,
+           cluster.index = 1:length(unique(output_WASABI$particles[1,])), 
+           title = paste('Particle 1',round(output_WASABI$part.weights[1],3)),
+           limts = lmts)
+p2_list = lapply(1:M,function(m){output_WASABI$particles[2,mouse.index==m]})
+ps_p2 = heatmap_VIC(Y = data_barseq, Z = p2_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p2,
+           cluster.index = 1:length(unique(output_WASABI$particles[2,])), 
+           title = paste('Particle 2',round(output_WASABI$part.weights[2],3)),
+           limts = lmts)
+p3_list = lapply(1:M,function(m){output_WASABI$particles[3,mouse.index==m]})
+ps_p3 = heatmap_VIC(Y = data_barseq, Z = p3_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p3,
+           cluster.index = 1:length(unique(output_WASABI$particles[3,])), 
+           title = paste('Particle 3',round(output_WASABI$part.weights[3],3)),
+           limts = lmts)
+
+ggarrange(ps_p1, ps_p2, ps_p3, ncol=3, nrow=1, common.legend = TRUE, legend="right")
+```
+
+```{r}
+# Heat maps
+# Illustrate clustering with heatmap of row-normalized data
+# Color by the group VIC
+meet_p1p2 = cls.meet(output_WASABI$particles[c(1,2),])$cls.m
+VIC_p1p2_group = sapply(1:sum(C), function(c){sum(VIC_p1p2[meet_p1p2 == meet_p1p2[c]])})
+meet_p1p3 = cls.meet(output_WASABI$particles[c(1,3),])$cls.m
+VIC_p1p3_group = sapply(1:sum(C), function(c){sum(VIC_p1p3[meet_p1p3 == meet_p1p3[c]])})
+lmts = c(0, max(max(VIC_p1p1),max(VIC_p1p2),max(VIC_p1p3_group)))
+ps_p1 = heatmap_VIC(Y = data_barseq, Z = p1_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p1,
+           cluster.index = 1:length(unique(output_WASABI$particles[1,])), 
+           title = paste('Particle 1',round(output_WASABI$part.weights[1],3)),
+           limts = lmts) +
+  labs(fill="VICG")
+p2_list = lapply(1:M,function(m){output_WASABI$particles[2,mouse.index==m]})
+ps_p2 = heatmap_VIC(Y = data_barseq, Z = p2_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p2_group,
+           cluster.index = 1:length(unique(output_WASABI$particles[2,])), 
+           title = paste('Particle 2',round(output_WASABI$part.weights[2],3)),
+           limts = lmts) +
+  labs(fill="VICG")
+p3_list = lapply(1:M,function(m){output_WASABI$particles[3,mouse.index==m]})
+ps_p3 = heatmap_VIC(Y = data_barseq, Z = p3_list, regions.name = rownames(data_barseq[[1]]), 
+           vic = VIC_p1p3_group,
+           cluster.index = 1:length(unique(output_WASABI$particles[3,])), 
+           title = paste('Particle 3',round(output_WASABI$part.weights[3],3)),
+           limts = lmts) +
+  labs(fill="VICG")
+
+ggarrange(ps_p1, ps_p2, ps_p3, ncol=3, nrow=1, common.legend = TRUE, legend="right")
+```
+
+```{r, fig.width=12, fig.height=16}
+# Color line plots by the VIC contribution to highlight differences between particles
+VIC_p1p1_list = list()
+for (m in 1:M){
+  VIC_p1p1_list[[m]] = VIC_p1p1[mouse.index==m]
+}
+VIC_p1p2_list = list()
+for (m in 1:M){
+  VIC_p1p2_list[[m]] = VIC_p1p2[mouse.index==m]
+}
+VIC_p1p3_list = list()
+for (m in 1:M){
+  VIC_p1p3_list[[m]] = VIC_p1p3[mouse.index==m]
+}
+
+# Filter to large enough clusters
+mouse.list = lapply(1:M, function(m){rep(as.factor(m),C[m])})
+motifs_filter1 = which(table(output_WASABI$particles[1,])>10)
+motifs_filter2 = which(table(output_WASABI$particles[2,])>10)
+motifs_filter3 = which(table(output_WASABI$particles[3,])>10)
+
+pl_p1_vic = projection_vic(data_barseq, mouse.list, p1_list, regions.name,motifs=motifs_filter1, VIC_p1p1_list, limts = lmts,  ncol=7) + 
+  labs(title = 'Particle 1')
+pl_p2_vic = projection_vic(data_barseq, mouse.list, p2_list, regions.name,motifs=motifs_filter2, VIC_p1p2_list, limts = lmts,  ncol=7) + 
+  labs(title = 'Particle 2')
+pl_p3_vic = projection_vic(data_barseq, mouse.list, p3_list, regions.name,motifs=motifs_filter3, VIC_p1p3_list, limts = lmts, ncol=7) + 
+  labs(title = 'Particle 3')
+
+ggarrange(pl_p1_vic, pl_p2_vic, pl_p3_vic, ncol=1, nrow=3, common.legend = TRUE, legend="right")
+```
+
+To label each cluster, we consider that neurons in each group project to a region if the average projection strength is greater than 0.02.
+```{r}
+p = 1
+data_norm_cbind =  t(matrix(unlist(data_norm), sum(C),R ,byrow = TRUE))
+part_motif_names <- lapply(sort(unique(output_WASABI$particles[p,])),
+                           function(j){
+                             
+                             data.j <- matrix(data_norm_cbind[,output_WASABI$particles[p,] == j],nrow = R,ncol = sum(output_WASABI$particles[p,] == j))
+                             data.j.average <- apply(data.j, 1, mean)
+                             
+                             pp.regions <- paste(regions.name[data.j.average >= 0.02], collapse = ',')
+                             pp.weight = sum(output_WASABI$particles[p,] == j)/sum(C)
+                             return(data.frame(cluster = j, 
+                                               pp.regions = pp.regions,
+                                               pp.weight = pp.weight,
+                                               pp.strength = data.j.average))
+                           })
+
+part_motif_names <- do.call(rbind, part_motif_names)
+print(part_motif_names[seq(1,dim(part_motif_names)[1],11),c(1,2)])
+```
+
+### Investigating the uncertainty of each particle
+
+We can plot the PSM within each region of attraction/neighborhood to understand the uncertainty of each particle.
+
+```{r, fig.height=7}
+# PSM within the region of attraction of particle 1
+psm_p1 = mcclust::comp.psm(cls.draw[output_WASABI$draws.assign==1,])
+hpsm_p1 = superheat(psm_p1,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_WASABI$particles[1,],
+          membership.cols = output_WASABI$particles[1,],
+          bottom.label.text.size = 4,
+          left.label.text.size = 4,
+          title = "PSM within particle 1's neighborhood")
+
+# PSM within the region of attraction of particle 2
+psm_p2 = mcclust::comp.psm(cls.draw[output_WASABI$draws.assign==2,])
+hpsm_p2 = superheat(psm_p2,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_WASABI$particles[2,],
+          membership.cols = output_WASABI$particles[2,],
+          bottom.label.text.size = 4,
+          left.label.text.size = 4,
+          title = "PSM within particle 2's neighborhood")
+
+# PSM within the region of attraction of particle 3
+psm_p3 = mcclust::comp.psm(cls.draw[output_WASABI$draws.assign==3,])
+hpsm_p3 = superheat(psm_p3,
+          pretty.order.rows = TRUE,
+          pretty.order.cols = TRUE,
+          heat.pal = c("white", "yellow", "red"),
+          heat.pal.values = c(0,.5,1),
+          membership.rows = output_WASABI$particles[3,],
+          membership.cols = output_WASABI$particles[3,],
+          bottom.label.text.size = 4,
+          left.label.text.size = 4,
+          title = "PSM within particle 3's neighborhood")
+
+# ggarrange(hpsm_p1, hpsm_p2, hpsm_p3, ncol=1, nrow=3, common.legend = TRUE, legend="bottom")
+```
+
+### Investigating the meet
+
+We can also find the meet of the particles. 
+
+First, we show line plots of neurons in each meet cluster, colored by the contribution to EVI. 
+
+```{r}
+output_meet = cls.meet(output_WASABI$particles)
+z_meet = output_meet$cls.m
+
+motifs_filter.m = which(table(z_meet)>10)
+evi.m = evi.wd.contribution(output_WASABI, z_meet)
+meet_list = lapply(1:M,function(m){z_meet[mouse.index==m]})
+evi.m_list = list()
+for (m in 1:M){
+  evi.m_list[[m]] = evi.m[mouse.index==m]
+}
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m_list, ncol=5)
+
+```
+
+The posterior similarity matrix approximated by WASABI and collapsed to the meet clusters helps us to understand which meet clusters are grouped across particles. 
+
+```{r, fig.width=10, fig.height=8}
+# Compute psm of meet clusters
+psm.m = psm.meet(z_meet,output_WASABI)
+Km <- nrow(psm.m)
+colnames(psm.m) <- 1:Km; rownames(psm.m) <- 1:Km
+
+# compare meet with particles
+i = 1
+part_cl = output_WASABI$particles[i,]
+tb_meettop = table(part_cl,z_meet)
+lbs_top = rownames(tb_meettop)[as.factor(apply(tb_meettop, 2, which.max))]
+
+tmp = reshape2::melt(as.matrix(as.data.frame.matrix(tb_meettop))) %>% 
+  arrange(Var1) %>% filter(value > 0)
+
+lbs_top = tmp %>% pull(Var1)
+tmp = tmp %>% pull(Var2)
+
+superheat::superheat(psm.m[tmp,tmp],
+                            heat.pal = c("white", "yellow", "red"),
+                            heat.pal.values = c(0,.5,1),
+                            heat.lim = c(0,1), # this is important!!
+                            row.title = paste('Particle',i),
+                            column.title = paste('Meet'),
+                            membership.rows = as.numeric(lbs_top),
+                            membership.cols = tmp,
+                            bottom.label.text.angle = 90,
+                            bottom.label.text.size = 3,
+                            left.label.text.size = 3)
+#ggsave(pm$plot,filename = "psm_meet_ac.png", device = "png", 
+#       width = 7.5, height = 8,units = "in", scale = 1)
+
+```
+
+Let's investigate the sizes of the meet clusters, colored by the their total EVI contribution (sum across neurons in the meet cluster). This helps us to understand which meet clusters are stable (groups of neurons with distinct projection patterns), and which may be more uncertain. 
+
+```{r, fig.height=3}
+tmp = reshape2::melt(as.matrix(as.data.frame.matrix(tb_meettop))) %>%
+  arrange(Var1) %>% filter(value > 0)
+evi.m.group = sapply(unique(tmp$Var2), function(m){max(sum(evi.m[z_meet==m]),0)})
+evi.m.unique= sapply(unique(tmp$Var2), function(m){unique(evi.m[z_meet==m])})
+df = data.frame(cluster = factor(tmp$Var2, levels = tmp$Var2 ), size = tmp$value, EVI = evi.m.group)
+ggplot(df) +
+  geom_col(aes(x = cluster, y = size, fill = EVI)) +
+  theme_bw() +
+  scale_fill_gradientn(colours = colors, transform = "sqrt", labels = function(x) sprintf("%.4f", x))+
+  theme(axis.text.x = element_text(size = 10, angle = 90, vjust = 0.5),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12,angle = 90)) +
+  labs(fill = "EVICG")
+```
+
+
+To visualize the stable meet clusters, we focus on those with at least 10 neurons and the EVI by group less than 0.002.
+
+```{r, fig.height=3}
+evi.m.group_list = list()
+for (m in 1:M){
+  evi.m.group_list[[m]] =  evi.m.group[sort(unique(tmp$Var2), index.return = T)$ix][z_meet[mouse.index==m]]
+}
+motifs_filter.m = df$cluster[(evi.m.group<0.002)&(df$size>10)]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=5, limts = c(0, max(evi.m.group))) + labs(color = "EVICG")
+```
+
+We can also look more carefully at some of the other meet clusters, for example those that form the noisy cluster 2 in particle 1.
+
+```{r, fig.height=3}
+# Clusters 2 of Particle 1
+motifs_filter.m = tmp[tmp$Var1==2,2]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=5, limts = c(0, max(evi.m.group))) + labs(color = "EVICG")
+```
+
+Another example is the meet clusters that form cluster 4 or 5 in particle 1.
+
+```{r, fig.height=6}
+# Clusters 4 of Particle 1
+motifs_filter.m = tmp$Var2[tmp$Var1==4]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=3, limts = c(0, max(evi.m.group))) + labs(color = "EVICG") 
+
+# Clusters 5 of Particle 1
+motifs_filter.m = tmp$Var2[tmp$Var1==5]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=3, limts = c(0, max(evi.m.group))) + labs(color = "EVICG") 
+```
+
+Let's also investigate the Thal and Tect clusters:
+  - Cluster 19 of particle 1 has moderate projection to Thal and Tect only
+  - Cluster 6 of particle also projects to Thal and Tect but with higher strength to Thal
+  - Cluster 17 of particle 1 also projects to Thal and Tect but with weak strength also to Cstr
+
+```{r, fig.height=3}
+# Clusters 19 of Particle 1
+motifs_filter.m = tmp$Var2[tmp$Var1==19]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=4, limts = c(0, max(evi.m.group))) + labs(color = "EVICG") 
+
+# Clusters 6 of Particle 1
+motifs_filter.m = tmp$Var2[tmp$Var1==6]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=3, limts = c(0, max(evi.m.group))) + labs(color = "EVICG") 
+
+# Clusters 17 of Particle 1
+motifs_filter.m = tmp$Var2[tmp$Var1==17]
+projection_vic(data_barseq, mouse.list, meet_list, regions.name, motifs=motifs_filter.m, evi.m.group_list, ncol=3, limts = c(0, max(evi.m.group))) + labs(color = "EVICG") 
+```
+
+```{r}
+meet_motif_names <- lapply(sort(unique(z_meet)),
+                           function(j){
+                             
+                             data.j <- matrix(data_norm_cbind[,z_meet == j],nrow = R,ncol = sum(z_meet==j))
+                             data.j.average <- apply(data.j, 1, mean)
+                             
+                             pp.regions <- paste(regions.name[data.j.average >= 0.02], collapse = ',')
+                             pp.weight = sum(z_meet == j)/sum(C)
+                             return(data.frame(cluster = j, 
+                                               pp.regions = pp.regions,
+                                               pp.weight = pp.weight,
+                                               pp.strength = data.j.average))
+                           })
+
+meet_motif_names <- do.call(rbind, meet_motif_names)
+print(meet_motif_names[seq(1,dim(meet_motif_names)[1],11),c(1,2)])
+```
