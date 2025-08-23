@@ -239,8 +239,9 @@ Let's use the `elbow` function to choose the number of particles $L$ with the el
 ```{r run_elbow}
 set.seed(123)
 out_elbow <- elbow(cls.draw, L_max = 6, psm = psm,
-                   multi.start = 1,
-                   method.init = "topvi", method = "salso")
+                   multi.start = 4,
+                   # multi.start = 4, mini.batch = 300,
+                   method.init = "++", method = "salso")
 plot(out_elbow$wass_vec, type = "b", ylab = "Wass distance", xlab = "Number of particles")
 ```
 
@@ -255,7 +256,7 @@ Once the value of $L$ is chosen, we can run another set of initializations to se
 
 ```{r check_multistart}
 output_WASABI_mb = WASABI_multistart(cls.draw, psm,
-                                    multi.start = 25, ncores = 4,
+                                    multi.start = 20, ncores = 4,
                                     method.init ="++", add_topvi = FALSE,
                                     method="salso", L=L,
                                     mini.batch = 500,

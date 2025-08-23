@@ -7,7 +7,7 @@
 ggrange(output_wvi, Y)
 }
 \arguments{
-\item{output_wvi}{A list containing at least elements \code{particles} (matrix) and \code{part.weights} (numeric vector) from WASABI output.}
+\item{output_wvi}{A list containing at least elements \code{particles} (matrix) from WASABI output.}
 
 \item{Y}{Numeric vector of data.}
 }

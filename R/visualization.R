@@ -181,12 +181,10 @@ ggscatter_grid <- function(output_wvi, Y) {
 #' ggsummary(output_wvi)
 #' }
 ggsummary <- function(output_wvi, title = NULL, legend = "right") {
-  
-  ind <- sort(output_wvi$part.weights, index.return = TRUE, decreasing = TRUE)
   K <- length(output_wvi$part.weights)
   particles <- as.factor(seq_len(K))
-  clusters <- apply(output_wvi$particles[ind$ix, ], 1, function(x) length(unique(x)))
-  weights <- output_wvi$part.weights[ind$ix]
+  clusters <- apply(output_wvi$particles, 1, function(x) length(unique(x)))
+  weights <- output_wvi$part.weights
   dat <- data.frame(
     particles = particles,
     Weight = weights,

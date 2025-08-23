@@ -61,7 +61,7 @@ such as BNPmix):
 
 ``` r
 est_model <- BNPmix::PYdensity(y = y,
-                               mcmc = list(niter = 6000,
+                               mcmc = list(niter = 15000,
                                            nburn = 5000,
                                            model = "LS",
                                            print_message = FALSE),
@@ -80,13 +80,19 @@ The minVI estimator is the partition with one cluster.
 ``` r
 psm=mcclust::comp.psm(cls.draw+1)
 superheat::superheat(psm,
+                     heat.pal = c("white", "yellow", "red"),
+                     heat.pal.values = c(0,.5,1),
                      pretty.order.cols = TRUE,
-                     pretty.order.rows = TRUE)
+                     pretty.order.rows = TRUE,
+                     membership.rows = z_minVI,
+                     membership.cols = z_minVI,
+                     bottom.label.text.size = 4,
+                     left.label.text.size = 4)
 ```
 
 <img src="man/figures/README-unnamed-chunk-4-1.png" width="100%" />
 
-However the posterior similarity matrix shows a clear two-cluster
+However the posterior similarity matrix shows a potential two-cluster
 pattern, with moderate posterior uncertainty. Let’s use WASABI to
 summarize the posterior with multiple point estimates:
 
@@ -97,12 +103,12 @@ out_WASABI <- WASABI(cls.draw, psm = psm, L = 2,
 
 To explore multiple initializations, we can use `WASABI_multistart`. We
 can also use the `mini.batch` option, to run the algorithm on a subset
-of the data (for example: 150). When using `mini.batch` it’s advisable
-to reduce the number of `max.iter` (for example to 10) and allow a small
-number of `extra.iter` that are run with the full dataset after the
-mini-batch part. This allows to allocate each MCMC sample in `cls.draw`
-to one of the particles/regions of attractions, and for the algorithm to
-stabilize after using mini-batch.
+of the mcmc draws (for example: 250). When using `mini.batch` it’s
+advisable to reduce the number of `max.iter` (for example to 10) and
+allow a small number of `extra.iter` that are run with the full dataset
+after the mini-batch part. This allows to allocate each MCMC sample in
+`cls.draw` to one of the particles/regions of attractions, and for the
+algorithm to stabilize after using mini-batch.
 
 Note, the multi-core option relies on `parallel::mclapply` which only
 works on MacOS and Linux. When running `WASABI_multistart` on Windows
@@ -111,8 +117,8 @@ machines, set `ncores = 1` (which is also the default).
 ``` r
 out_WASABI_ms <- WASABI_multistart(cls.draw, psm = psm, L = 2,
                                    multi.start = 20, ncores = 4,
-                                   mini.batch = 150,
-                                   max.iter = 10, extra.iter = 4,
+                                   mini.batch = 250,
+                                   max.iter = 10, extra.iter = 5,
                                    method.init = "++", method = "salso")
 ```
 
@@ -201,10 +207,10 @@ khat = 4
 b_x= rep(mean(apply(Y,2,var))/(khat^(2/p))/2,p)
 
 ### Parameters for MCMC function
-S=1000
+S=10000
 thin = 1
 tot = S*thin
-burnin=10000
+burnin=5000
 
 est_model <- BNPmix::PYdensity(y = Y,
                        mcmc = list(niter = burnin + tot,
@@ -219,27 +225,21 @@ est_model <- BNPmix::PYdensity(y = Y,
                          strength = alpha,
                          discount = 0),
                        output = list(out_type = "FULL", out_param = TRUE))
-#> Completed:   1100/11000 - in 0.478067 sec
-#> Completed:   2200/11000 - in 0.939248 sec
-#> Completed:   3300/11000 - in 1.39589 sec
-#> Completed:   4400/11000 - in 1.84335 sec
-#> Completed:   5500/11000 - in 2.32279 sec
-#> Completed:   6600/11000 - in 2.80815 sec
-#> Completed:   7700/11000 - in 3.22682 sec
-#> Completed:   8800/11000 - in 3.7245 sec
-#> Completed:   9900/11000 - in 4.19597 sec
-#> Completed:   11000/11000 - in 4.83649 sec
+#> Completed:   1500/15000 - in 0.675822 sec
+#> Completed:   3000/15000 - in 1.29331 sec
+#> Completed:   4500/15000 - in 1.90247 sec
+#> Completed:   6000/15000 - in 2.71267 sec
+#> Completed:   7500/15000 - in 3.49767 sec
+#> Completed:   9000/15000 - in 4.37728 sec
+#> Completed:   10500/15000 - in 5.27854 sec
+#> Completed:   12000/15000 - in 6.13917 sec
+#> Completed:   13500/15000 - in 7.00167 sec
+#> Completed:   15000/15000 - in 7.87779 sec
 #> 
-#> Estimation done in 4.83655 seconds
+#> Estimation done in 7.87784 seconds
 cls.draw = est_model$clust
 psm=mcclust::comp.psm(cls.draw+1)
 ```
-
-``` r
-superheat::superheat(psm, pretty.order.rows = TRUE, pretty.order.cols = TRUE)
-```
-
-<img src="man/figures/README-unnamed-chunk-14-1.png" width="100%" />
 
 Let’s inspect the minVI estimator:
 
@@ -247,10 +247,9 @@ Let’s inspect the minVI estimator:
 z_minVI <- salso::salso(cls.draw)
 table(z_minVI)
 #> z_minVI
-#>   1   2 
-#> 504  96
-head(z_minVI)
-#> [1] 1 1 2 1 1 1
+#>   1 
+#> 600
+
 df = data.frame(x1 = Y[,1], 
                 x2 = Y[,2], 
                 Cluster = z_minVI)
@@ -262,6 +261,20 @@ ggplot(df)+
   theme_bw()
 ```
 
+<img src="man/figures/README-unnamed-chunk-14-1.png" width="100%" />
+
+``` r
+superheat::superheat(psm, 
+                     heat.pal = c("white", "yellow", "red"),
+                     heat.pal.values = c(0,.5,1),
+                     pretty.order.cols = TRUE,
+                     pretty.order.rows = TRUE,
+                     membership.rows = z_minVI,
+                     membership.cols = z_minVI,
+                     bottom.label.text.size = 4,
+                     left.label.text.size = 4)
+```
+
 <img src="man/figures/README-unnamed-chunk-15-1.png" width="100%" />
 
 Let’s use the `elbow` function to choose the number of particles $L$
@@ -270,19 +283,21 @@ with the elbow method:
 ``` r
 set.seed(123)
 out_elbow <- elbow(cls.draw, L_max = 6, psm = psm,
-                   multi.start = 1,
-                   method.init = "topvi", method = "salso")
+                   multi.start = 4,
+                   # multi.start = 4, mini.batch = 300,
+                   method.init = "++", method = "salso")
 #> Completed  1 / 6 
 #> Completed  2 / 6 
-#> Completed  3 / 6 
-#> Completed  4 / 6
-#> Warning in salso::salso(x = cls.draw_relab[assign.vi == l, ]): The number of
-#> clusters equals the default maximum possible number of clusters.
-#> Completed  5 / 6
-#> Warning in salso::salso(x = cls.draw_relab[assign.vi == l, ]): The number of
-#> clusters equals the default maximum possible number of clusters.
+#> Completed  3 / 6
+#> Warning in salso::salso(x = cls.draw_relab[assign.vi == l, ], ...): The number
+#> of clusters equals the default maximum possible number of clusters.
+#> Warning in salso::salso(x = cls.draw_relab[assign.vi == l, ], ...): The number
+#> of possible zealous attempts exceeded the maximum. Do you really want that many
+#> clusters? Consider lowering 'maxNClusters' or increasing 'maxZealousAttempts'.
+#> Completed  4 / 6 
+#> Completed  5 / 6 
 #> Completed  6 / 6
-plot(out_elbow$wass_vec, type = "b", ylab = "Wass distance")
+plot(out_elbow$wass_vec, type = "b", ylab = "Wass distance", xlab = "Number of particles")
 ```
 
 <img src="man/figures/README-run_elbow-1.png" width="100%" />
@@ -299,11 +314,12 @@ initializations to see if we can find a better approximation:
 
 ``` r
 output_WASABI_mb = WASABI_multistart(cls.draw, psm,
-                                    multi.start = 25, ncores = 4,
+                                    multi.start = 20, ncores = 4,
                                     method.init ="++", add_topvi = FALSE,
                                     method="salso", L=L,
-                                    mini.batch = 200,
-                                    max.iter= 10, suppress.comment=FALSE,
+                                    mini.batch = 500,
+                                    max.iter= 10, extra.iter = 5,
+                                    suppress.comment=FALSE,
                                     swap_countone = TRUE,
                                     seed = 54321)
 ```
@@ -312,6 +328,8 @@ output_WASABI_mb = WASABI_multistart(cls.draw, psm,
 if(output_WASABI_mb$wass.dist < output_WASABI$wass.dist){
   output_WASABI <- output_WASABI_mb
 }
+print(output_WASABI$wass.dist)
+#> [1] 1.614746
 ```
 
 ``` r
